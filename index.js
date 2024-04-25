@@ -3,11 +3,11 @@ const makeWASocket = require("@whiskeysockets/baileys").default;
 const {
 	DisconnectReason,
 	useMultiFileAuthState,
+	downloadMediaMessage,
 } = require("@whiskeysockets/baileys");
-
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_AI_API);
+const { createSticker, StickerTypes } = require("wa-sticker-formatter");
+const { getAIResponse } = require("./utils/gemini-ai");
+const fs = require("node:fs/promises");
 
 async function connect() {
 	const { state, saveCreds } = await useMultiFileAuthState("auth_info_baileys");
@@ -32,33 +32,55 @@ async function connect() {
 	sock.ev.on("creds.update", saveCreds);
 
 	sock.ev.on("messages.upsert", async ({ messages }) => {
-		if (messages[0].key.fromMe) return;
+		const m = messages[0];
+		if (!m.message) return;
+		if (m.key.fromMe) return;
+		// console.log(JSON.stringify(m, undefined, 2));
 
-		const messageText = messages[0].message.conversation;
-		const remoteJid = messages[0].key.remoteJid;
+		const message =
+			m.message?.extendedTextMessage?.text ??
+			m.message?.conversation ??
+			m.message?.imageMessage?.caption ??
+			"";
 
-		await sock.readMessages([messages[0].key]);
+		if (message.toLocaleLowerCase() === ".help") {
+			return sock.sendMessage(m.key.remoteJid, {
+				text: await fs.readFile("./utils/help.txt", "utf-8"),
+			});
+		}
 
-		console.log(JSON.stringify(messages[0], undefined, 2));
+		if (message.startsWith(".ai")) {
+			return sock.sendMessage(m.key.remoteJid, {
+				text: await getAIResponse(message),
+			});
+		}
 
-		const response = await getAIResponse(messageText);
+		if (
+			m.message?.imageMessage?.caption === ".sticker" ||
+			(m.message?.imageMessage?.caption === ".s" && m.message?.imageMessage)
+		) {
+			const mediaData = await downloadMediaMessage(
+				m,
+				"buffer",
+				{},
+				{
+					reuploadRequest: sock.updateMediaMessage,
+				}
+			);
+			const stickerOption = {
+				pack: "",
+				author: "afadhili",
+				type: StickerTypes.FULL,
+				quality: 50,
+			};
 
-		await sock.sendMessage(remoteJid, {
-			text: response,
-		});
+			const generateSticker = await createSticker(mediaData, stickerOption);
 
-		console.log(`
-    Responding to ${remoteJid} : ${messageText} 
-    Response : ${response}`);
+			await sock.sendMessage(m.key.remoteJid, {
+				sticker: generateSticker,
+			});
+		}
 	});
 }
-
-const getAIResponse = async (text) => {
-	const model = genAI.getGenerativeModel({ model: "gemini-pro" });
-	const result = await model.generateContent(text);
-	const response = await result.response.text();
-
-	return response;
-};
 
 connect();
